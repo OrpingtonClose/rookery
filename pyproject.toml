@@ -2,7 +2,7 @@
 name = "rookery"
 version = "0.0.1"
 description = "A swarm of specialist clones that understand a codebase, then guide every move the LLM operator makes."
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 license = {text = "Apache-2.0"}
 authors = [{name = "OrpingtonClose"}]
 readme = "README.md"
@@ -40,7 +40,7 @@ include = ["rookery*"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W", "B", "UP"]
