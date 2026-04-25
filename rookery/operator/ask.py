@@ -39,7 +39,7 @@ async def ask_clone(
     repo_id: str,
     clone_id: str,
     question: str,
-    max_tokens: int = 2048,
+    max_tokens: int = 6000,
 ) -> AskResult:
     """Put a question to a named clone. Returns its answer + telemetry.
 
@@ -61,12 +61,28 @@ async def ask_clone(
         index.close()
 
     system_prompt = clone.current.prefix_text()
+
+    # Scope-awareness guardrail: tell the clone to check its corpus
+    # manifest BEFORE answering, and to refuse/hedge when the relevant
+    # file is in the deferred list. This is the fix for the Q4-style
+    # failure mode (confident extrapolation from absence).
+    guardrail = (
+        "\n\n"
+        "Before answering, check the corpus manifest above: which files "
+        "did you read, which were deferred? If the most relevant file "
+        "to this question is in the DEFERRED list, say so explicitly "
+        "at the start of your answer and hedge your conclusions. Do not "
+        "extrapolate from absence. Cite file:line refs only for files "
+        "you actually read."
+    )
+    augmented_question = question + guardrail
+
     logger.info(
         "ask: clone=%s v%d prefix=%d chars, question=%d chars",
         clone_id,
         clone.current.version,
         len(system_prompt),
-        len(question),
+        len(augmented_question),
     )
 
     async with LLMClient(
@@ -75,7 +91,7 @@ async def ask_clone(
         default_model=config.model,
     ) as llm:
         resp = await llm.complete(
-            prompt=question,
+            prompt=augmented_question,
             system=system_prompt,
             model=config.model_for(clone_id),
             max_tokens=max_tokens,

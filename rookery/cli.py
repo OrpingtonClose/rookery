@@ -143,7 +143,14 @@ async def _cmd_tear_down(config: Config, repo_path: Path, repo_id: str | None) -
     return 0 if result.clones_materialized else 1
 
 
-async def _cmd_ask(config: Config, repo_id: str, clone_id: str, question: str) -> int:
+async def _cmd_ask(
+    config: Config,
+    repo_id: str,
+    clone_id: str,
+    question: str,
+    *,
+    max_tokens: int = 6000,
+) -> int:
     from rookery.operator.ask import ask_clone
 
     try:
@@ -152,13 +159,23 @@ async def _cmd_ask(config: Config, repo_id: str, clone_id: str, question: str) -
             repo_id=repo_id,
             clone_id=clone_id,
             question=question,
+            max_tokens=max_tokens,
         )
     except LookupError as exc:
         console.print(f"[red]clone not found:[/red] {exc}")
         return 2
 
     console.rule(f"{result.clone_id} v{result.clone_version}")
-    console.print(result.answer or "[dim](empty answer)[/dim]")
+    if result.answer:
+        console.print(result.answer)
+    else:
+        console.print("[yellow](empty answer)[/yellow]")
+        if result.reasoning:
+            console.print(
+                "[dim]reasoning consumed the token budget — "
+                "retry with --max-tokens larger than "
+                f"{result.completion_tokens}[/dim]"
+            )
     console.print()
     console.print(
         f"[dim]tokens: prompt={result.prompt_tokens} "
@@ -186,6 +203,12 @@ def main(argv: list[str] | None = None) -> int:
 
     p_ask = sub.add_parser("ask", help="ask a clone a question")
     p_ask.add_argument("--repo-id", required=True)
+    p_ask.add_argument(
+        "--max-tokens",
+        type=int,
+        default=6000,
+        help="max completion tokens (reasoning counts against this)",
+    )
     p_ask.add_argument("clone", help="clone id, e.g. invariant_keeper")
     p_ask.add_argument("question", help="the question")
 
@@ -206,7 +229,15 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "tear-down":
         return asyncio.run(_cmd_tear_down(config, args.path, args.repo_id))
     if args.cmd == "ask":
-        return asyncio.run(_cmd_ask(config, args.repo_id, args.clone, args.question))
+        return asyncio.run(
+            _cmd_ask(
+                config,
+                args.repo_id,
+                args.clone,
+                args.question,
+                max_tokens=args.max_tokens,
+            )
+        )
 
     parser.print_help()
     return 1
