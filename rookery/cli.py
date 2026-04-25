@@ -95,15 +95,77 @@ async def _cmd_status(config: Config, repo: str | None) -> int:
     return 0
 
 
-async def _cmd_tear_down(config: Config, repo_path: Path) -> int:
+async def _cmd_tear_down(config: Config, repo_path: Path, repo_id: str | None) -> int:
     from rookery.tearing_down.pipeline import TearDownPipeline
 
-    pipe = TearDownPipeline(config=config, repo_path=repo_path)
+    repo_path = repo_path.resolve()
+    if not repo_path.exists():
+        console.print(f"[red]path does not exist:[/red] {repo_path}")
+        return 2
+
+    pipe = TearDownPipeline(
+        config=config,
+        repo_path=repo_path,
+        repo_id=repo_id,
+    )
     result = await pipe.run()
-    console.print(f"[bold]run_id:[/bold] {result.run_id}")
-    console.print(f"[bold]angles:[/bold] {', '.join(result.angles_detected)}")
-    for note in result.notes:
-        console.print(f"  • {note}")
+
+    console.rule(f"tear-down {result.run_id}")
+    console.print(f"[bold]repo:[/bold]     {result.repo_id}")
+    console.print(f"[bold]angles:[/bold]   {len(result.angles_detected)} detected")
+    for a in result.angles_detected:
+        console.print(f"  • {a}")
+
+    console.print(f"[bold]clones:[/bold]   {len(result.clones_materialized)} materialized")
+    for ref in result.clones_materialized:
+        console.print(
+            f"  • {ref.clone_id:24s} v{ref.version}  prefix_sha={ref.prefix_sha256[:12]}…"
+        )
+
+    if result.worker_failures:
+        console.print(f"[yellow]failures:[/yellow] {len(result.worker_failures)}")
+        for cid, err in result.worker_failures:
+            console.print(f"  [red]✗[/red] {cid}: {err[:140]}")
+
+    u = result.total_llm_usage
+    if u:
+        console.print(
+            f"[dim]tokens: prompt={u.get('prompt_tokens', 0)} "
+            f"completion={u.get('completion_tokens', 0)} "
+            f"reasoning={u.get('reasoning_tokens', 0)} "
+            f"cache_hit={u.get('cache_hit_tokens', 0)}"
+        )
+
+    if result.finished_at:
+        dt = (result.finished_at - result.started_at).total_seconds()
+        console.print(f"[dim]elapsed: {dt:.1f}s")
+
+    return 0 if result.clones_materialized else 1
+
+
+async def _cmd_ask(config: Config, repo_id: str, clone_id: str, question: str) -> int:
+    from rookery.operator.ask import ask_clone
+
+    try:
+        result = await ask_clone(
+            config=config,
+            repo_id=repo_id,
+            clone_id=clone_id,
+            question=question,
+        )
+    except LookupError as exc:
+        console.print(f"[red]clone not found:[/red] {exc}")
+        return 2
+
+    console.rule(f"{result.clone_id} v{result.clone_version}")
+    console.print(result.answer or "[dim](empty answer)[/dim]")
+    console.print()
+    console.print(
+        f"[dim]tokens: prompt={result.prompt_tokens} "
+        f"completion={result.completion_tokens} "
+        f"cache_hit={result.cache_hit_tokens} "
+        f"elapsed={result.elapsed_s:.1f}s"
+    )
     return 0
 
 
@@ -118,6 +180,14 @@ def main(argv: list[str] | None = None) -> int:
 
     p_tear = sub.add_parser("tear-down", help="run comprehension pipeline")
     p_tear.add_argument("path", type=Path, help="repository root")
+    p_tear.add_argument(
+        "--repo-id", default=None, help="logical repo id (defaults to path basename)"
+    )
+
+    p_ask = sub.add_parser("ask", help="ask a clone a question")
+    p_ask.add_argument("--repo-id", required=True)
+    p_ask.add_argument("clone", help="clone id, e.g. invariant_keeper")
+    p_ask.add_argument("question", help="the question")
 
     args = parser.parse_args(argv)
 
@@ -134,7 +204,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "status":
         return asyncio.run(_cmd_status(config, args.repo))
     if args.cmd == "tear-down":
-        return asyncio.run(_cmd_tear_down(config, args.path))
+        return asyncio.run(_cmd_tear_down(config, args.path, args.repo_id))
+    if args.cmd == "ask":
+        return asyncio.run(_cmd_ask(config, args.repo_id, args.clone, args.question))
 
     parser.print_help()
     return 1

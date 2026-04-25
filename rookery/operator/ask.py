@@ -1,0 +1,94 @@
+"""`rookery ask` / swarm.ask implementation.
+
+Rehydrates a persisted clone from the datalake and runs a single
+question against it with the full clone prefix as the system message.
+
+This is the minimum viable Stage-2 tool: a user (or the operator) can
+ask a specialist clone a direct question and get an evidence-backed
+answer. No critic loop yet.
+"""
+
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass
+
+from rookery.clones.persist import load_clone
+from rookery.config import Config
+from rookery.datalake.store import BlobStore, IndexDb
+from rookery.llm import LLMClient
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class AskResult:
+    clone_id: str
+    clone_version: int
+    answer: str
+    reasoning: str
+    prompt_tokens: int
+    completion_tokens: int
+    cache_hit_tokens: int
+    elapsed_s: float
+
+
+async def ask_clone(
+    *,
+    config: Config,
+    repo_id: str,
+    clone_id: str,
+    question: str,
+    max_tokens: int = 2048,
+) -> AskResult:
+    """Put a question to a named clone. Returns its answer + telemetry.
+
+    Opens the datalake, rehydrates the clone's latest version, and
+    sends a single chat-completion with the clone's full prefix as the
+    system message. The caller is responsible for printing/logging.
+    """
+    dl = config.datalake_dir
+    blobs = BlobStore(dl)
+    index = IndexDb.open(dl / "index.duckdb")
+    try:
+        clone = load_clone(
+            clone_id=clone_id,
+            repo_id=repo_id,
+            blobs=blobs,
+            index=index,
+        )
+    finally:
+        index.close()
+
+    system_prompt = clone.current.prefix_text()
+    logger.info(
+        "ask: clone=%s v%d prefix=%d chars, question=%d chars",
+        clone_id,
+        clone.current.version,
+        len(system_prompt),
+        len(question),
+    )
+
+    async with LLMClient(
+        base_url=config.base_url,
+        api_key=config.api_key,
+        default_model=config.model,
+    ) as llm:
+        resp = await llm.complete(
+            prompt=question,
+            system=system_prompt,
+            model=config.model_for(clone_id),
+            max_tokens=max_tokens,
+            temperature=0.2,
+        )
+
+    return AskResult(
+        clone_id=clone_id,
+        clone_version=clone.current.version,
+        answer=resp.content,
+        reasoning=resp.reasoning,
+        prompt_tokens=resp.usage.prompt_tokens,
+        completion_tokens=resp.usage.completion_tokens,
+        cache_hit_tokens=resp.usage.cache_hit_tokens,
+        elapsed_s=resp.elapsed_s,
+    )

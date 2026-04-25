@@ -124,12 +124,34 @@ async def consult(
     )
 
 
-async def ask(clone_id: str, question: str) -> str:
+async def ask(
+    clone_id: str,
+    question: str,
+    *,
+    repo_id: str | None = None,
+) -> str:
     """Put a direct question to a named clone.
 
-    STAGE 2 — STUB.
+    Rehydrates the clone's latest version from the datalake and runs
+    the question with the full clone prefix as the system message.
+    Returns just the answer text; for telemetry use
+    ``rookery.operator.ask.ask_clone`` directly.
     """
-    return f"[rookery stub] ask({clone_id!r}, {question!r}) — Stage 2 not implemented"
+    from rookery.config import Config
+    from rookery.operator.ask import ask_clone
+
+    config = Config.from_env()
+    if repo_id is None:
+        # Use the datalake root's name as the default repo_id — same
+        # fallback as the CLI.
+        repo_id = config.datalake_dir.resolve().parent.name
+    result = await ask_clone(
+        config=config,
+        repo_id=repo_id,
+        clone_id=clone_id,
+        question=question,
+    )
+    return result.answer
 
 
 async def explain(target: str) -> str:
