@@ -1,0 +1,50 @@
+[project]
+name = "rookery"
+version = "0.0.1"
+description = "A swarm of specialist clones that understand a codebase, then guide every move the LLM operator makes."
+requires-python = ">=3.11"
+license = {text = "Apache-2.0"}
+authors = [{name = "OrpingtonClose"}]
+readme = "README.md"
+
+dependencies = [
+    "openhands-sdk>=0.1.0",   # the OpenHands SDK we delegate through
+    "httpx>=0.27.0",
+    "pydantic>=2.6.0",
+    "duckdb>=1.4.0,<1.5.0",   # matching the Flock compat window
+    "tiktoken>=0.7.0",        # token counting for clone-size discipline
+    "rich>=13.7.0",           # CLI output
+    "tomli>=2.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.8.0",
+    "pyright>=1.1.350",
+]
+graph = [
+    "neo4j>=5.0.0",           # only needed at Stage 4+
+]
+
+[project.scripts]
+rookery = "rookery.cli:main"
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["rookery*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "B", "UP"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
