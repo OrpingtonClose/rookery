@@ -309,7 +309,7 @@ async def run_worker(
     if isinstance(scorecard_data.get("domains_weak"), list):
         sc.domains_weak = [str(x) for x in scorecard_data["domains_weak"]]
     coverage = scorecard_data.get("estimated_coverage")
-    if isinstance(coverage, (int, float)):
+    if isinstance(coverage, int | float):
         sc.calibration["estimated_coverage"] = float(coverage)
 
     return WorkerResult(
