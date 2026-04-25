@@ -165,7 +165,21 @@ async def _cmd_ask(
         console.print(f"[red]clone not found:[/red] {exc}")
         return 2
 
-    console.rule(f"{result.clone_id} v{result.clone_version}")
+    # Header: clone id + version + self-reported coverage
+    header = f"{result.clone_id} v{result.clone_version}"
+    if result.estimated_coverage is not None:
+        header += f"  (self-coverage: {result.estimated_coverage:.0%})"
+    console.rule(header)
+
+    # Brief trust-calibration hint before the answer — users should
+    # see what the clone claims to know BEFORE reading its answer.
+    if result.domains_strong or result.domains_weak:
+        if result.domains_strong:
+            console.print("[dim]strong:[/dim] " + ", ".join(result.domains_strong[:6]))
+        if result.domains_weak:
+            console.print("[dim]weak:[/dim]   " + ", ".join(result.domains_weak[:6]))
+        console.print()
+
     if result.answer:
         console.print(result.answer)
     else:

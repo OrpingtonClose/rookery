@@ -11,7 +11,7 @@ answer. No critic loop yet.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from rookery.clones.persist import load_clone
 from rookery.config import Config
@@ -31,6 +31,12 @@ class AskResult:
     completion_tokens: int
     cache_hit_tokens: int
     elapsed_s: float
+    # Surfaced from the clone's scorecard so users can calibrate trust
+    # before reading the answer. Derived from the worker's own JSON
+    # output during tear-down; None if the clone never reported it.
+    estimated_coverage: float | None = None
+    domains_strong: list[str] = field(default_factory=list)
+    domains_weak: list[str] = field(default_factory=list)
 
 
 async def ask_clone(
@@ -98,6 +104,8 @@ async def ask_clone(
             temperature=0.2,
         )
 
+    sc = clone.current.scorecard
+    cov = sc.calibration.get("estimated_coverage")
     return AskResult(
         clone_id=clone_id,
         clone_version=clone.current.version,
@@ -107,4 +115,7 @@ async def ask_clone(
         completion_tokens=resp.usage.completion_tokens,
         cache_hit_tokens=resp.usage.cache_hit_tokens,
         elapsed_s=resp.elapsed_s,
+        estimated_coverage=float(cov) if isinstance(cov, int | float) else None,
+        domains_strong=list(sc.domains_strong),
+        domains_weak=list(sc.domains_weak),
     )

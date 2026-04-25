@@ -109,20 +109,36 @@ def _build_prompt(
     files_included: list[Path],
     files_excluded: list[Path],
     repo_root: Path,
+    pass_number: int = 1,
+    prior_open_questions: list[str] | None = None,
+    extra_context: str = "",
 ) -> str:
-    """Prompt for the worker's comprehension pass.
-
-    Produces structured output we can both append to the clone prefix
-    and parse into a scorecard. Output contract is strict: a narrative
-    section followed by a machine-readable JSON block.
-    """
+    """Prompt for the worker's comprehension pass."""
     included_list = "\n".join(f"  - {p.relative_to(repo_root).as_posix()}" for p in files_included)
     excluded_list = (
         "\n".join(f"  - {p.relative_to(repo_root).as_posix()}" for p in files_excluded)
         or "  (none)"
     )
 
+    extra_block = ""
+    if extra_context:
+        extra_block = (
+            f"\nAdditional context provided specifically for your role:\n{extra_context}\n"
+        )
+
+    pass_block = ""
+    if pass_number > 1 and prior_open_questions:
+        qs = "\n".join(f"  - {q}" for q in prior_open_questions[:15])
+        pass_block = (
+            f"\nThis is comprehension pass {pass_number}. Your earlier pass "
+            "left these OPEN QUESTIONS — if any can now be answered by the "
+            "files below, answer them in your narrative and remove them "
+            "from ``open_questions`` in your JSON:\n"
+            f"{qs}\n"
+        )
+
     return f"""You are the {spec.role_short} for repository ``{repo_id}``.
+{extra_block}{pass_block}
 
 Role:
 {spec.role_prompt}
@@ -225,26 +241,35 @@ async def run_worker(
     llm: LLMClient,
     model: str,
     max_tokens: int = 8000,
+    pass_number: int = 1,
+    only_paths: list[Path] | None = None,
+    prior_open_questions: list[str] | None = None,
+    extra_context: str = "",
 ) -> WorkerResult:
-    """Run one angle's first-pass comprehension.
+    """Run one comprehension pass for this angle.
 
-    Side effects:
-      - Appends a ``corpus`` segment to ``clone.current`` listing the
-        files read (source of truth for what the worker saw).
-      - Appends a ``residue`` segment with the worker's narrative.
-      - Writes the LLM's scorecard to the clone's version-level
-        scorecard (does not persist to disk here; caller does that).
+    On ``pass_number=1`` (default), packs the smallest files from the
+    assignment first, respecting the source budget. On pass 2+, pass
+    ``only_paths`` to process *those* files (typically the ones the
+    first pass deferred) and ``prior_open_questions`` so the worker
+    knows what it is trying to resolve.
+
+    ``extra_context`` is free-form text appended near the top of the
+    prompt — e.g. the History Keeper receives a git summary here.
     """
     spec = assignment.clone_spec
+
+    paths_for_this_pass = only_paths if only_paths is not None else assignment.paths
     logger.info(
-        "worker %s: %d files, %d bytes in scope",
+        "worker %s pass=%d: %d files candidate for pass (scope total %d bytes)",
         spec.id,
-        len(assignment.paths),
+        pass_number,
+        len(paths_for_this_pass),
         assignment.scope_bytes,
     )
 
     packed, included, excluded = _pack_sources(
-        assignment.paths,
+        paths_for_this_pass,
         repo_root,
         _SOURCE_BUDGET_CHARS,
     )
@@ -256,6 +281,9 @@ async def run_worker(
         files_included=included,
         files_excluded=excluded,
         repo_root=repo_root,
+        pass_number=pass_number,
+        prior_open_questions=prior_open_questions,
+        extra_context=extra_context,
     )
 
     response: LLMResponse = await llm.complete(
@@ -277,40 +305,49 @@ async def run_worker(
         )
         narrative = f"[empty narrative from worker; finish={response.finish_reason}]"
 
-    # Write the corpus-manifest segment: what this clone actually saw.
-    # Keeping this as a segment (not just metadata) means the clone's
-    # prefix is self-describing when rehydrated.
+    # Write the corpus-manifest segment: what this clone actually saw
+    # on THIS pass. Keeping this as a segment (not just metadata) means
+    # the clone's prefix is self-describing when rehydrated, and a
+    # second pass produces a second manifest so the scope history is
+    # visible in-prefix.
     manifest_lines = [
-        f"# Corpus manifest for clone {clone.id} (worker pass 1)",
+        f"# Corpus manifest for clone {clone.id} (worker pass {pass_number})",
         f"# Repo: {repo_id}",
-        f"# Files read: {len(included)}",
-        f"# Files deferred: {len(excluded)}",
+        f"# Files read this pass: {len(included)}",
+        f"# Files deferred this pass: {len(excluded)}",
         "",
-        "## Files read",
+        "## Files read this pass",
         *(f"  - {p.relative_to(repo_root).as_posix()}" for p in included),
     ]
     if excluded:
         manifest_lines += [
             "",
-            "## Files deferred (budget)",
+            "## Files deferred this pass (budget)",
             *(f"  - {p.relative_to(repo_root).as_posix()}" for p in excluded),
         ]
     manifest = "\n".join(manifest_lines) + "\n"
 
+    origin = f"worker_pass_{pass_number}"
     version = clone.current
-    version.append_segment(kind="corpus", text=manifest, origin="worker_pass_1")
-    version.append_segment(kind="residue", text=narrative + "\n", origin="worker_pass_1")
+    version.append_segment(kind="corpus", text=manifest, origin=origin)
+    version.append_segment(kind="residue", text=narrative + "\n", origin=origin)
 
     # Update the clone's version-level scorecard from the worker JSON.
-    # Only fields we recognize; ignore unknown keys rather than crash.
+    # We merge rather than overwrite across passes so pass 2's strengths
+    # add to pass 1's instead of replacing them.
     sc = version.scorecard
     if isinstance(scorecard_data.get("domains_strong"), list):
-        sc.domains_strong = [str(x) for x in scorecard_data["domains_strong"]]
+        new = [str(x) for x in scorecard_data["domains_strong"]]
+        sc.domains_strong = sorted(set(sc.domains_strong) | set(new))
     if isinstance(scorecard_data.get("domains_weak"), list):
-        sc.domains_weak = [str(x) for x in scorecard_data["domains_weak"]]
+        new = [str(x) for x in scorecard_data["domains_weak"]]
+        sc.domains_weak = sorted(set(sc.domains_weak) | set(new))
     coverage = scorecard_data.get("estimated_coverage")
     if isinstance(coverage, int | float):
-        sc.calibration["estimated_coverage"] = float(coverage)
+        sc.calibration[f"estimated_coverage_pass_{pass_number}"] = float(coverage)
+        # Also maintain a cumulative "best so far" for easy ask-side display.
+        cumulative = sc.calibration.get("estimated_coverage", 0.0)
+        sc.calibration["estimated_coverage"] = max(cumulative, float(coverage))
 
     return WorkerResult(
         clone_spec=spec,
